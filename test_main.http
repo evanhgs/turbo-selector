@@ -1,0 +1,25 @@
+# Test your FastAPI endpoints
+
+GET http://127.0.0.1:8000/
+Accept: application/json
+
+###
+
+GET http://127.0.0.1:8000/health
+Accept: application/json
+
+###
+
+POST http://127.0.0.1:8000/best-comp
+Content-Type: application/json
+Accept: application/json
+
+< players.json
+
+###
+
+POST http://127.0.0.1:8000/best-comp-mvp
+Content-Type: application/json
+Accept: application/json
+
+< players.json

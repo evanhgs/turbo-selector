@@ -1,0 +1,50 @@
+services:
+  nba-optimizer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nba-optimizer-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - WORKERS=4
+      - PORT=8000
+      - LOG_LEVEL=info
+      - ALLOWED_IP=*
+    volumes:
+      - ./data:/app/data:ro
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - nba-network
+
+  # (Optionnel) Nginx comme reverse proxy pour performance
+  nginx:
+    image: nginx:alpine
+    container_name: nba-optimizer-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - nba-optimizer
+    networks:
+      - nba-network
+
+networks:
+  nba-network:
+    driver: bridge
