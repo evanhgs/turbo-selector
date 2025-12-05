@@ -59,7 +59,11 @@ async def find_best_composition(request: PlayersRequest) -> TeamOptimizationResu
     - Minimum 4 stars (All-Stars)
 
     Args:
-        request: Liste des joueurs disponibles
+        request: PlayersRequest
+            players (List[Player]): Liste des joueurs disponibles
+            cost (Integer): Coût maximum pour l'équipe
+            team_size (Integer): Nombre de joueurs dans l'équipe
+            minimum_stars (Integer): Nombre minimum de stars dans l'équipe
 
     Returns:
         TeamOptimizationResult: Composition optimale de l'équipe
@@ -68,6 +72,14 @@ async def find_best_composition(request: PlayersRequest) -> TeamOptimizationResu
         HTTPException: Si aucune solution optimale n'est trouvée
     """
     players = request.players
+    cost = request.cost
+    team_size = request.team_size
+    minimum_stars = request.minimum_stars
+    if players is None or cost is None or team_size is None or minimum_stars is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Les paramètres players, cost, team_size et minimum_stars sont requis"
+        )
     n = len(players)
 
     prob = LpProblem("NBA_Team_Optimization", LpMaximize)
@@ -79,15 +91,16 @@ async def find_best_composition(request: PlayersRequest) -> TeamOptimizationResu
 
     prob += lpSum([players[i].score * x[i] for i in range(n)]), "Total_Score"
 
-    prob += lpSum([x[i] for i in range(n)]) == 5, "Team_Size"
+    prob += lpSum([x[i] for i in range(n)]) == team_size, "Team_Size"
 
-    prob += lpSum([players[i].cost * x[i] for i in range(n)]) <= 120, "Budget_Constraint"
+    prob += lpSum([players[i].cost * x[i] for i in range(n)]) <= cost, "Budget_Constraint"
 
-    prob += lpSum([int(players[i].is_star) * x[i] for i in range(n)]) >= 4, "Minimum_Stars"
+    prob += lpSum([int(players[i].is_star) * x[i] for i in range(n)]) >= minimum_stars, "Minimum_Stars"
 
     prob.solve(PULP_CBC_CMD(msg=0))
 
     status = LpStatus[prob.status]
+
     if status != 'Optimal':
         raise HTTPException(
             status_code=400,
@@ -136,7 +149,11 @@ async def find_best_composition_mvp(request: PlayersRequest) -> MVPOptimizationR
     - Le score de tous les joueurs doit être <= au score du joueur gratuit
 
     Args:
-        request: Liste des joueurs disponibles
+        request: PlayersRequest
+            players (List[Player]): Liste des joueurs disponibles
+            cost (Integer): Coût maximum pour l'équipe
+            team_size (Integer): Nombre de joueurs dans l'équipe
+            minimum_stars (Integer): Nombre minimum de stars dans l'équipe
 
     Returns:
         MVPOptimizationResult: Composition optimale avec joueur gratuit
@@ -145,6 +162,14 @@ async def find_best_composition_mvp(request: PlayersRequest) -> MVPOptimizationR
         HTTPException: Si aucune solution optimale n'est trouvée
     """
     players = request.players
+    cost = request.cost
+    team_size = request.team_size
+    minimum_stars = request.minimum_stars
+    if players is None or cost is None or team_size is None or minimum_stars is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Les paramètres players, cost, team_size et minimum_stars sont requis"
+        )
     n = len(players)
 
     score_max: float = max(p.score for p in players)
@@ -158,12 +183,15 @@ async def find_best_composition_mvp(request: PlayersRequest) -> MVPOptimizationR
 
     prob += lpSum([players[i].score * x[i] for i in range(n)]), "Score_Total"
 
-    prob += lpSum([x[i] for i in range(n)]) == 5, "Nb_Joueurs"
+    prob += lpSum([x[i] for i in range(n)]) == team_size, "Nb_Joueurs"
+
     prob += (
             lpSum([players[i].cost * x[i] for i in range(n)]) -
-            lpSum([players[i].cost * y[i] for i in range(n)]) <= 120
+            lpSum([players[i].cost * y[i] for i in range(n)]) <= cost
     ), "Budget"
-    prob += lpSum([int(players[i].is_star) * x[i] for i in range(n)]) >= 4, "Min_Etoiles"
+
+    prob += lpSum([int(players[i].is_star) * x[i] for i in range(n)]) >= minimum_stars, "Min_Etoiles"
+
     prob += lpSum([y[i] for i in range(n)]) == 1, "Un_Gratuit"
 
     for i in range(n):
@@ -179,6 +207,7 @@ async def find_best_composition_mvp(request: PlayersRequest) -> MVPOptimizationR
     prob.solve(PULP_CBC_CMD(msg=0, threads=n_threads, timeLimit=30))
 
     status = LpStatus[prob.status]
+    
     if status != 'Optimal':
         raise HTTPException(
             status_code=400,

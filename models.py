@@ -22,6 +22,9 @@ class Player(BaseModel):
 
 class PlayersRequest(BaseModel):
     players: List[Player] = Field(..., min_length=5, description="Liste des joueurs disponibles")
+    cost: int = Field(..., ge=0, description="Coût maximum pour l'équipe")
+    team_size: int = Field(..., ge=1, description="Nombre de joueurs dans l'équipe")
+    minimum_stars: int = Field(..., ge=0, description="Nombre minimum de stars dans l'équipe")
 
     @field_validator('players')
     @classmethod
