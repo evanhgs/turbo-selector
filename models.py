@@ -25,6 +25,7 @@ class PlayersRequest(BaseModel):
     cost: int = Field(..., ge=0, description="Coût maximum pour l'équipe")
     team_size: int = Field(..., ge=1, description="Nombre de joueurs dans l'équipe")
     minimum_stars: int = Field(..., ge=0, description="Nombre minimum de stars dans l'équipe")
+    forced_players: Optional[List[str]] = Field(default=None, description="Noms des joueurs obligatoires")
 
     @field_validator('players')
     @classmethod
@@ -48,6 +49,10 @@ class TeamOptimizationResult(BaseModel):
     details: List[SelectedPlayer] = Field(..., description="Détails complets des joueurs sélectionnés")
     status: str = Field(..., description="Statut de l'optimisation")
 
+class MultiTeamOptimizationResult(BaseModel):
+    solutions: List[TeamOptimizationResult] = Field(..., description="Top N meilleures compositions")
+    total_solutions_found: int = Field(..., description="Nombre total de solutions trouvées")
+
 class MVPOptimizationResult(BaseModel):
     players: List[str] = Field(..., description="Noms des joueurs sélectionnés")
     free_player: Optional[str] = Field(None, description="Nom du joueur gratuit (plus cher)")
@@ -69,3 +74,7 @@ class MVPOptimizationResult(BaseModel):
                 "status": "Optimal"
             }
         }
+
+class MultiMVPOptimizationResult(BaseModel):
+    solutions: List[MVPOptimizationResult] = Field(..., description="Top N meilleures compositions MVP")
+    total_solutions_found: int = Field(..., description="Nombre total de solutions trouvées")
