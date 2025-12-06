@@ -1,4 +1,4 @@
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from fastapi import FastAPI, HTTPException
 from pulp import LpMaximize, LpProblem, LpVariable, lpSum, LpBinary, LpStatus, PULP_CBC_CMD
 import multiprocessing as mp
@@ -47,179 +47,104 @@ async def health():
     return {"status": "healthy", "service": "nba-optimizer"}
 
 
-@app.post("/best-comp", response_model=TeamOptimizationResult)
-async def find_best_composition(request: PlayersRequest) -> TeamOptimizationResult:
+@app.post("/best-comp", response_model=Union[TeamOptimizationResult, MVPOptimizationResult])
+async def find_best_composition(
+        request: PlayersRequest
+) -> Union[TeamOptimizationResult, MVPOptimizationResult]:
+
     """
-    Résultat vérifié par l'algo: prog dynamique et parcours en profondeur
     Trouve la meilleure composition d'équipe NBA en maximisant le score
 
-    Contraintes :
-    - Exactement 5 joueurs
-    - Budget maximum : 120
-    - Minimum 4 stars (All-Stars)
+    Mode standard (is_mvp=False):
+    - Contraintes classiques : budget, taille d'équipe, stars minimum
+
+    Mode MVP (is_mvp=True):
+    - Le joueur avec le coût le plus élevé est gratuit
+    - Le score des autres joueurs doit être <= au score du joueur gratuit
 
     Args:
-        request: PlayersRequest
-            players (List[Player]): Liste des joueurs disponibles
-            cost (Integer): Coût maximum pour l'équipe
-            team_size (Integer): Nombre de joueurs dans l'équipe
-            minimum_stars (Integer): Nombre minimum de stars dans l'équipe
+        request: PlayersRequest contenant tous les paramètres nécessaires
 
     Returns:
-        TeamOptimizationResult: Composition optimale de l'équipe
+        TeamOptimizationResult ou MVPOptimizationResult selon le mode
 
     Raises:
-        HTTPException: Si aucune solution optimale n'est trouvée
+        HTTPException: Si les paramètres sont manquants ou aucune solution trouvée
     """
     players = request.players
     cost = request.cost
     team_size = request.team_size
     minimum_stars = request.minimum_stars
     forced_players = request.forced_players or []
-    
+    is_mvp = request.is_mvp or False
+
+    # Validation des paramètres
     if players is None or cost is None or team_size is None or minimum_stars is None:
         raise HTTPException(
             status_code=400,
             detail="Les paramètres players, cost, team_size et minimum_stars sont requis"
         )
+
     n = len(players)
     forced_indices = [i for i in range(n) if players[i].name in forced_players]
 
-    prob = LpProblem("NBA_Team_Optimization", LpMaximize)
-
-    x = [
-        LpVariable(f"player_{i}_{players[i].name.replace(' ', '_')}", cat=LpBinary)
-        for i in range(n)
-    ]
-
-    prob += lpSum([players[i].score * x[i] for i in range(n)]), "Total_Score"
-
-    prob += lpSum([x[i] for i in range(n)]) == team_size, "Team_Size"
-
-    prob += lpSum([players[i].cost * x[i] for i in range(n)]) <= cost, "Budget_Constraint"
-
-    prob += lpSum([int(players[i].is_star) * x[i] for i in range(n)]) >= minimum_stars, "Minimum_Stars"
-
-    for idx in forced_indices:
-        prob += x[idx] == 1, f"Forced_Player_{idx}"
-        
-    prob.solve(PULP_CBC_CMD(msg=0))
-
-    status = LpStatus[prob.status]
-
-    if status != 'Optimal':
-        raise HTTPException(
-            status_code=400,
-            detail=f"Aucune solution optimale trouvée. Statut: {status}. "
-                   f"Vérifiez les contraintes (budget, nombre de stars, etc.)"
-        )
-
-    selected_team: List[Player] = [
-        players[i] for i in range(n) if x[i].varValue == 1
-    ]
-
-    total_cost = sum(player.cost for player in selected_team)
-    total_score = sum(player.score for player in selected_team)
-    star_count = sum(1 for player in selected_team if player.is_star)
-
-    return TeamOptimizationResult(
-        players=[player.name for player in selected_team],
-        total_cost=total_cost,
-        total_score=round(total_score, 2),
-        star_count=star_count,
-        details=[
-            SelectedPlayer(
-                name=player.name,
-                cost=player.cost,
-                score=player.score,
-                is_star=player.is_star
-            )
-            for player in selected_team
-        ],
-        status=status
+    # Initialisation du problème
+    prob = LpProblem(
+        "NBA_MVP_Optimise" if is_mvp else "NBA_Team_Optimization",
+        LpMaximize
     )
 
-
-@app.post("/best-comp-mvp", response_model=MVPOptimizationResult)
-async def find_best_composition_mvp(request: PlayersRequest) -> MVPOptimizationResult:
-    """
-    Trouve la meilleure composition d'équipe NBA avec un joueur gratuit (MVP)
-
-    Le joueur avec le coût le plus élevé parmi les sélectionnés est gratuit.
-
-    Contraintes :
-    - Exactement 5 joueurs
-    - Budget maximum : 120 (après déduction du joueur gratuit)
-    - Minimum 4 stars (All-Stars)
-    - Un joueur est gratuit (le plus cher)
-    - Le score de tous les joueurs doit être <= au score du joueur gratuit
-
-    Args:
-        request: PlayersRequest
-            players (List[Player]): Liste des joueurs disponibles
-            cost (Integer): Coût maximum pour l'équipe
-            team_size (Integer): Nombre de joueurs dans l'équipe
-            minimum_stars (Integer): Nombre minimum de stars dans l'équipe
-
-    Returns:
-        MVPOptimizationResult: Composition optimale avec joueur gratuit
-
-    Raises:
-        HTTPException: Si aucune solution optimale n'est trouvée
-    """
-    players = request.players
-    cost = request.cost
-    team_size = request.team_size
-    minimum_stars = request.minimum_stars
-    forced_players = request.forced_players or []
-
-    if players is None or cost is None or team_size is None or minimum_stars is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Les paramètres players, cost, team_size et minimum_stars sont requis"
-        )
-    n = len(players)
-    forced_indices = [i for i in range(n) if players[i].name in forced_players]
-
-    score_max: float = max(p.score for p in players)
-
-    prob = LpProblem("NBA_MVP_Optimise", LpMaximize)
-
+    # Variables de décision communes
     x = [LpVariable(f"x_{i}", cat=LpBinary) for i in range(n)]
-    y = [LpVariable(f"y_{i}", cat=LpBinary) for i in range(n)]
 
-    s_gratuit = LpVariable("score_gratuit", lowBound=0, upBound=score_max)
+    # Variables spécifiques au mode MVP
+    if is_mvp:
+        score_max = max(p.score for p in players)
+        y = [LpVariable(f"y_{i}", cat=LpBinary) for i in range(n)]
+        s_gratuit = LpVariable("score_gratuit", lowBound=0, upBound=score_max)
 
-    prob += lpSum([players[i].score * x[i] for i in range(n)]), "Score_Total"
+    # Fonction objectif (identique)
+    prob += lpSum([players[i].score * x[i] for i in range(n)]), "Total_Score"
 
-    prob += lpSum([x[i] for i in range(n)]) == team_size, "Nb_Joueurs"
-
+    # Contraintes communes
+    prob += lpSum([x[i] for i in range(n)]) == team_size, "Team_Size"
     prob += (
-            lpSum([players[i].cost * x[i] for i in range(n)]) -
-            lpSum([players[i].cost * y[i] for i in range(n)]) <= cost
-    ), "Budget"
+        lpSum([int(players[i].is_star) * x[i] for i in range(n)]) >= minimum_stars,
+        "Minimum_Stars"
+    )
 
-    prob += lpSum([int(players[i].is_star) * x[i] for i in range(n)]) >= minimum_stars, "Min_Etoiles"
-
-    prob += lpSum([y[i] for i in range(n)]) == 1, "Un_Gratuit"
-
-    for i in range(n):
-        prob += y[i] <= x[i], f"Gratuit_Selec_{i}"
-
-        prob += s_gratuit >= players[i].score * y[i], f"Score_Gratuit_{i}"
-
+    # Contrainte budgétaire (différente selon le mode)
+    if is_mvp:
         prob += (
-                players[i].score * x[i] <= s_gratuit + score_max * (1 - x[i])
-        ), f"Max_Score_{i}"
+                lpSum([players[i].cost * x[i] for i in range(n)])
+                - lpSum([players[i].cost * y[i] for i in range(n)])
+                <= cost
+        ), "Budget_Constraint"
+        prob += lpSum([y[i] for i in range(n)]) == 1, "One_Free_Player"
+    else:
+        prob += (
+            lpSum([players[i].cost * x[i] for i in range(n)]) <= cost,
+            "Budget_Constraint"
+        )
 
+    # Contraintes spécifiques au mode MVP
+    if is_mvp:
+        for i in range(n):
+            prob += y[i] <= x[i], f"Free_Selected_{i}"
+            prob += s_gratuit >= players[i].score * y[i], f"Free_Score_{i}"
+            prob += (
+                players[i].score * x[i] <= s_gratuit + score_max * (1 - x[i]),
+                f"Max_Score_{i}"
+            )
+
+    # Joueurs forcés (commun)
     for idx in forced_indices:
         prob += x[idx] == 1, f"Forced_Player_{idx}"
 
-    # n_threads = mp.cpu_count()
+    # Résolution
     prob.solve(PULP_CBC_CMD(msg=0, timeLimit=30))
-
     status = LpStatus[prob.status]
-    
+
     if status != 'Optimal':
         raise HTTPException(
             status_code=400,
@@ -227,38 +152,53 @@ async def find_best_composition_mvp(request: PlayersRequest) -> MVPOptimizationR
                    f"Vérifiez les contraintes (budget, nombre de stars, etc.)"
         )
 
+    # Construction de l'équipe sélectionnée
     selected_team: List[Player] = []
     free_player: Optional[Player] = None
 
     for i in range(n):
         if x[i].varValue == 1:
             selected_team.append(players[i])
-            if y[i].varValue == 1:
+            if is_mvp and y[i].varValue == 1:
                 free_player = players[i]
 
+    # Calcul des statistiques
     total_cost = sum(player.cost for player in selected_team)
-    paid_cost = total_cost - (free_player.cost if free_player else 0)
     total_score = sum(player.score for player in selected_team)
     star_count = sum(1 for player in selected_team if player.is_star)
 
-    return MVPOptimizationResult(
-        players=[player.name for player in selected_team],
-        free_player=free_player.name if free_player else None,
-        total_cost=total_cost,
-        paid_cost=paid_cost,
-        total_score=round(total_score, 2),
-        star_count=star_count,
-        details=[
-            SelectedPlayer(
-                name=player.name,
-                cost=player.cost,
-                score=player.score,
-                is_star=player.is_star
-            )
-            for player in selected_team
-        ],
-        status=status
-    )
+    details = [
+        SelectedPlayer(
+            name=player.name,
+            cost=player.cost,
+            score=player.score,
+            is_star=player.is_star
+        )
+        for player in selected_team
+    ]
+
+    # Retour selon le mode
+    if is_mvp:
+        paid_cost = total_cost - (free_player.cost if free_player else 0)
+        return MVPOptimizationResult(
+            players=[player.name for player in selected_team],
+            free_player=free_player.name if free_player else None,
+            total_cost=total_cost,
+            paid_cost=paid_cost,
+            total_score=round(total_score, 2),
+            star_count=star_count,
+            details=details,
+            status=status
+        )
+    else:
+        return TeamOptimizationResult(
+            players=[player.name for player in selected_team],
+            total_cost=total_cost,
+            total_score=round(total_score, 2),
+            star_count=star_count,
+            details=details,
+            status=status
+        )
 
 
 @app.post("/best-comps", response_model=MultiTeamOptimizationResult)
@@ -360,8 +300,8 @@ async def find_best_compositions_mvp(
     - Budget maximum : cost (après déduction du joueur gratuit)
     - Minimum minimum_stars stars (All-Stars)
     - Un joueur est gratuit (le plus cher)
-    - Le score de tous les joueurs doit être <= au score du joueur gratuit
-    
+    - Si il y a des joueurs forcés, alors les intégrer directement dans la solution ensuite se base sur n joueurs restant ou n est le nombre de joueurs forcés
+
     Args:
         request: PlayersRequest
         top_n: Nombre de solutions à retourner (défaut: 5)

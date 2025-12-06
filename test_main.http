@@ -18,7 +18,15 @@ Accept: application/json
 
 ###
 
-POST http://127.0.0.1:8000/best-comp-mvp
+POST http://127.0.0.1:8000/best-comps
+Content-Type: application/json
+Accept: application/json
+
+< players.json
+
+###
+
+POST http://127.0.0.1:8000/best-comps-mvp
 Content-Type: application/json
 Accept: application/json
 

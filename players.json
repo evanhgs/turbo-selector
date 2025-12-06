@@ -2,10 +2,8 @@
   "cost": 123,
   "team_size": 5,
   "minimum_stars": 4,
-  "forced_players": [
-    "paolo_banchero_20021112",
-    "lamelo_ball_20010822"
-  ],
+  "forced_players": [""],
+  "is_mvp": false,
   "players": [
     {"name": "giannis_antetokounmpo_19941206", "cost": 50, "score": 58.7477, "is_star": false},
     {"name": "thanasis_antetokounmpo_19920718", "cost": 4, "score": 1.256, "is_star": true},

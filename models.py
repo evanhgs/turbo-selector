@@ -26,6 +26,7 @@ class PlayersRequest(BaseModel):
     team_size: int = Field(..., ge=1, description="Nombre de joueurs dans l'équipe")
     minimum_stars: int = Field(..., ge=0, description="Nombre minimum de stars dans l'équipe")
     forced_players: Optional[List[str]] = Field(default=None, description="Noms des joueurs obligatoires")
+    is_mvp: bool = Field(default=False, description="Si le mode Mvp est true alors le coup du meilleur joueur ne compte pas")
 
     @field_validator('players')
     @classmethod
