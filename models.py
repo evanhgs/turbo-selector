@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -79,3 +79,9 @@ class MVPOptimizationResult(BaseModel):
 class MultiMVPOptimizationResult(BaseModel):
     solutions: List[MVPOptimizationResult] = Field(..., description="Top N meilleures compositions MVP")
     total_solutions_found: int = Field(..., description="Nombre total de solutions trouvées")
+
+class TopNResult(BaseModel):
+    """Résultat contenant les N meilleures compositions"""
+    results: List[Union[TeamOptimizationResult, MVPOptimizationResult]]
+    total_found: int
+    requested: int

@@ -1,4 +1,4 @@
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Union, Set
 from fastapi import FastAPI, HTTPException
 from pulp import LpMaximize, LpProblem, LpVariable, lpSum, LpBinary, LpStatus, PULP_CBC_CMD
 import multiprocessing as mp
@@ -6,7 +6,8 @@ import multiprocessing as mp
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
-from models import TeamOptimizationResult, PlayersRequest, Player, SelectedPlayer, MVPOptimizationResult, MultiTeamOptimizationResult, MultiMVPOptimizationResult
+from models import TeamOptimizationResult, PlayersRequest, Player, SelectedPlayer, MVPOptimizationResult, \
+    MultiTeamOptimizationResult, MultiMVPOptimizationResult, TopNResult
 
 app = FastAPI(
     title="NBA Team Optimizer",
@@ -297,217 +298,319 @@ async def find_best_composition(
         status=status
     )
 
-@app.post("/best-comps", response_model=MultiTeamOptimizationResult)
-async def find_top_compositions(
-    request: PlayersRequest,
-    top_n: int = 8
-) -> MultiTeamOptimizationResult:
+@app.post("/best-comp/top-n", response_model=TopNResult)
+async def find_top_n_compositions(
+        request: PlayersRequest,
+        n: int = 20
+) -> TopNResult:
     """
-    Trouve les N meilleures compositions d'équipe NBA
-    """
-    players = request.players        
-    cost = request.cost
-    team_size = request.team_size
-    minimum_stars = request.minimum_stars
-    forced_players = request.forced_players or []
-    
-    if not all([players, cost is not None, team_size is not None, minimum_stars is not None]):
-        raise HTTPException(
-            status_code=400,
-            detail="Les paramètres players, cost, team_size et minimum_stars sont requis"
-        )
-    
-    n = len(players)
-    solutions = []
-    excluded_combinations = []
-    forced_indices = [i for i in range(n) if players[i].name in forced_players]
+    Trouve les N meilleures compositions d'équipe NBA par ordre décroissant de score
 
-    player_scores = [players[i].score for i in range(n)]
-    player_costs = [players[i].cost for i in range(n)]
-    player_is_star = [int(players[i].is_star) for i in range(n)]
-    
-    for iteration in range(top_n):
-        prob = LpProblem(f"NBA_{iteration}", LpMaximize)
-        
-        x = [LpVariable(f"p{i}_{iteration}", cat=LpBinary) for i in range(n)]
-        
-        prob += lpSum([player_scores[i] * x[i] for i in range(n)])
-        
-        prob += lpSum(x) == team_size
-        prob += lpSum([player_costs[i] * x[i] for i in range(n)]) <= cost
-        prob += lpSum([player_is_star[i] * x[i] for i in range(n)]) >= minimum_stars
-
-        for idx in forced_indices:
-            prob += x[idx] == 1
-        
-        for idx, excluded_idx in enumerate(excluded_combinations):
-            prob += lpSum([x[i] for i in excluded_idx]) <= team_size - 1
-        
-        # n_threads = mp.cpu_count()
-        prob.solve(PULP_CBC_CMD(msg=0, timeLimit=30))
-        
-        if LpStatus[prob.status] != 'Optimal':
-            break
-        
-        selected_indices = [i for i in range(n) if x[i].varValue and x[i].varValue > 0.5]
-        
-        if not selected_indices:
-            break
-        
-        selected_team = [players[i] for i in selected_indices]
-        
-        total_cost = sum(p.cost for p in selected_team)
-        total_score = sum(p.score for p in selected_team)
-        star_count = sum(1 for p in selected_team if p.is_star)
-        
-        solutions.append(TeamOptimizationResult(
-            players=[p.name for p in selected_team],
-            total_cost=total_cost,
-            total_score=round(total_score, 2),
-            star_count=star_count,
-            details=[
-                SelectedPlayer(name=p.name, cost=p.cost, score=p.score, is_star=p.is_star)
-                for p in selected_team
-            ],
-            status="Optimal"
-        ))
-        
-        excluded_combinations.append(selected_indices)
-    
-    if not solutions:
-        raise HTTPException(status_code=400, detail="Aucune solution trouvée")
-    
-    return MultiTeamOptimizationResult(
-        solutions=solutions,
-        total_solutions_found=len(solutions)
-    )
-
-@app.post("/best-comps-mvp", response_model=MultiMVPOptimizationResult)
-async def find_best_compositions_mvp(
-    request: PlayersRequest,
-    top_n: int = 8
-) -> MultiMVPOptimizationResult:
-    """
-    Trouve les N meilleures compositions d'équipe NBA avec un joueur gratuit (MVP)
-    Le joueur avec le coût le plus élevé parmi les sélectionnés est gratuit.
-    
-    Contraintes :
-    - Exactement team_size joueurs
-    - Budget maximum : cost (après déduction du joueur gratuit)
-    - Minimum minimum_stars stars (All-Stars)
-    - Un joueur est gratuit (le plus cher)
-    - Si il y a des joueurs forcés, alors les intégrer directement dans la solution ensuite se base sur n joueurs restant ou n est le nombre de joueurs forcés
+    OPTIMISATIONS :
+    - Utilise la réduction du problème pour les joueurs forcés
+    - Méthode itérative avec exclusion pour trouver les solutions suivantes
+    - Stop anticipé si aucune nouvelle solution n'est trouvée
 
     Args:
-        request: PlayersRequest
-        top_n: Nombre de solutions à retourner (défaut: 5)
-    
+        request: PlayersRequest contenant tous les paramètres
+        n: Nombre de compositions à retourner (défaut: 8)
+
     Returns:
-        MultiMVPOptimizationResult: Les N meilleures compositions optimales avec joueur gratuit
+        TopNResult contenant les N meilleures compositions triées par score
+
+    Raises:
+        HTTPException: Si les paramètres sont invalides ou aucune solution trouvée
     """
+    if n < 1 or n > 100:
+        raise HTTPException(
+            status_code=400,
+            detail="Le paramètre n doit être entre 1 et 100"
+        )
+
     players = request.players
     cost = request.cost
     team_size = request.team_size
     minimum_stars = request.minimum_stars
     forced_players = request.forced_players or []
-    
-    if not all([players, cost is not None, team_size is not None, minimum_stars is not None]):
+    is_mvp = request.is_mvp or False
+
+    # Validation des paramètres
+    if players is None or cost is None or team_size is None or minimum_stars is None:
         raise HTTPException(
             status_code=400,
             detail="Les paramètres players, cost, team_size et minimum_stars sont requis"
         )
-    
-    n = len(players)
-    score_max = max(p.score for p in players)
-    solutions = []
-    excluded_combinations = []
-    forced_indices = [i for i in range(n) if players[i].name in forced_players]
-    
-    for iteration in range(top_n):
-        prob = LpProblem(f"NBA_MVP_Optimise_{iteration}", LpMaximize)
-        
-        x = [LpVariable(f"x_{i}_it{iteration}", cat=LpBinary) for i in range(n)]
-        y = [LpVariable(f"y_{i}_it{iteration}", cat=LpBinary) for i in range(n)]
-        s_gratuit = LpVariable(f"score_gratuit_it{iteration}", lowBound=0, upBound=score_max)
-        
-        prob += lpSum([players[i].score * x[i] for i in range(n)]), "Score_Total"
-        
-        prob += lpSum([x[i] for i in range(n)]) == team_size, "Nb_Joueurs"
-        prob += (
-            lpSum([players[i].cost * x[i] for i in range(n)]) -
-            lpSum([players[i].cost * y[i] for i in range(n)]) <= cost
-        ), "Budget"
-        prob += lpSum([int(players[i].is_star) * x[i] for i in range(n)]) >= minimum_stars, "Min_Etoiles"
-        prob += lpSum([y[i] for i in range(n)]) == 1, "Un_Gratuit"
-        
-        for i in range(n):
-            prob += y[i] <= x[i], f"Gratuit_Selec_{i}"
-            prob += s_gratuit >= players[i].score * y[i], f"Score_Gratuit_{i}"
-            prob += (
-                players[i].score * x[i] <= s_gratuit + score_max * (1 - x[i])
-            ), f"Max_Score_{i}"
 
-        for idx in forced_indices:
-            prob += x[idx] == 1, f"Forced_Player_{idx}"
-        
-        for idx, excluded_indices in enumerate(excluded_combinations):
-            prob += (
-                lpSum([x[i] for i in excluded_indices]) <= team_size - 1,
-                f"Exclude_Sol_it{iteration}_ex{idx}"
+    results: List[Union[TeamOptimizationResult, MVPOptimizationResult]] = []
+    excluded_combinations: List[Set[str]] = []
+
+    # ============================================================================
+    # PRÉTRAITEMENT : Séparation forcés / disponibles (comme avant)
+    # ============================================================================
+    forced_team, available_players, validation_result = _preprocess_forced_players(
+        players, forced_players, team_size, cost, minimum_stars
+    )
+
+    if validation_result:  # Erreur de validation
+        raise HTTPException(status_code=400, detail=validation_result)
+
+    remaining_budget = cost - sum(p.cost for p in forced_team)
+    remaining_stars_needed = max(0, minimum_stars - sum(1 for p in forced_team if p.is_star))
+    remaining_slots = team_size - len(forced_team)
+
+    # Cas particulier : tous les joueurs sont forcés
+    if remaining_slots == 0:
+        result = _build_result(
+            selected_team=forced_team,
+            free_player=None,
+            is_mvp=is_mvp,
+            status="Optimal"
+        )
+        return TopNResult(
+            results=[result],
+            total_found=1,
+            requested=n,
+        )
+
+    # ============================================================================
+    # BOUCLE PRINCIPALE : Trouver les N meilleures solutions
+    # ============================================================================
+    for iteration in range(n):
+        try:
+            # Résoudre le problème en excluant les solutions déjà trouvées
+            result = _solve_optimization_with_exclusions(
+                available_players=available_players,
+                forced_team=forced_team,
+                remaining_slots=remaining_slots,
+                remaining_budget=remaining_budget,
+                remaining_stars_needed=remaining_stars_needed,
+                excluded_combinations=excluded_combinations,
+                is_mvp=is_mvp,
+                iteration=iteration
             )
-        
 
-        prob.solve(PULP_CBC_CMD(msg=0, timeLimit=30))
-        status = LpStatus[prob.status]
-        
-        if status != 'Optimal':
-            break 
-
-        selected_indices = [i for i in range(n) if x[i].varValue == 1]
-        selected_team = [players[i] for i in selected_indices]
-        free_player = None
-        
-        for i in range(n):
-            if y[i].varValue == 1:
-                free_player = players[i]
+            if result is None:
                 break
-        
-        total_cost = sum(player.cost for player in selected_team)
-        paid_cost = total_cost - (free_player.cost if free_player else 0)
-        total_score = sum(player.score for player in selected_team)
-        star_count = sum(1 for player in selected_team if player.is_star)
-        
-        solutions.append(MVPOptimizationResult(
-            players=[player.name for player in selected_team],
-            free_player=free_player.name if free_player else None,
-            total_cost=total_cost,
-            paid_cost=paid_cost,
-            total_score=round(total_score, 2),
-            star_count=star_count,
-            details=[
-                SelectedPlayer(
-                    name=player.name,
-                    cost=player.cost,
-                    score=player.score,
-                    is_star=player.is_star
-                )
-                for player in selected_team
-            ],
-            status=status
-        ))
-        
-        excluded_combinations.append(selected_indices)
-    
-    if len(solutions) == 0:
+
+            results.append(result)
+
+            # Ajouter cette combinaison à la liste d'exclusion
+            current_combination = set(result.players)
+            excluded_combinations.append(current_combination)
+
+        except Exception as e:
+            print(f"Arrêt à l'itération {iteration}: {e}")
+            break
+
+    if not results:
         raise HTTPException(
             status_code=400,
-            detail="Aucune solution optimale trouvée. Vérifiez les contraintes."
+            detail="Aucune composition valide trouvée avec les contraintes données"
         )
-    
-    return MultiMVPOptimizationResult(
-        solutions=solutions,
-        total_solutions_found=len(solutions)
+
+    return TopNResult(
+        results=results,
+        total_found=len(results),
+        requested=n,
     )
+
+# ============================================================================
+# FONCTION DE PRÉTRAITEMENT
+# ============================================================================
+def _preprocess_forced_players(
+        players: List[Player],
+        forced_players: List[str],
+        team_size: int,
+        cost: int,
+        minimum_stars: int
+) -> tuple[List[Player], List[Player], Optional[str]]:
+    """
+    Sépare les joueurs forcés des joueurs disponibles et valide les contraintes
+
+    Returns:
+        (forced_team, available_players, error_message)
+        error_message est None si tout est valide
+    """
+    forced_team: List[Player] = []
+    available_players: List[Player] = []
+
+    for player in players:
+        if player.name in forced_players:
+            forced_team.append(player)
+        else:
+            available_players.append(player)
+
+    # Validations
+    if len(forced_team) != len(forced_players):
+        missing = set(forced_players) - {p.name for p in forced_team}
+        return forced_team, available_players, f"Joueurs forcés introuvables : {missing}"
+
+    if len(forced_team) > team_size:
+        return forced_team, available_players, \
+            f"Trop de joueurs forcés ({len(forced_team)}) pour une équipe de {team_size}"
+
+    forced_cost = sum(p.cost for p in forced_team)
+    if forced_cost > cost:
+        return forced_team, available_players, \
+            f"Les joueurs forcés dépassent le budget. Coût: {forced_cost}, Budget: {cost}"
+
+    forced_stars = sum(1 for p in forced_team if p.is_star)
+    remaining_slots = team_size - len(forced_team)
+    remaining_stars_needed = max(0, minimum_stars - forced_stars)
+
+    if remaining_stars_needed > remaining_slots:
+        return forced_team, available_players, \
+            f"Impossible d'atteindre {minimum_stars} stars. Forcés: {forced_stars}, Places: {remaining_slots}"
+
+    return forced_team, available_players, None
+
+
+# ============================================================================
+# FONCTION DE RÉSOLUTION AVEC EXCLUSIONS
+# ============================================================================
+def _solve_optimization_with_exclusions(
+        available_players: List[Player],
+        forced_team: List[Player],
+        remaining_slots: int,
+        remaining_budget: int,
+        remaining_stars_needed: int,
+        excluded_combinations: List[Set[str]],
+        is_mvp: bool,
+        iteration: int
+) -> Optional[Union[TeamOptimizationResult, MVPOptimizationResult]]:
+    """
+    Résout le problème d'optimisation en excluant les combinaisons déjà trouvées
+
+    Returns:
+        Le résultat optimal ou None si aucune solution n'existe
+    """
+    n_available = len(available_players)
+
+    if n_available == 0 and remaining_slots > 0:
+        return None
+
+    prob = LpProblem(
+        f"NBA_Top_{iteration}_{'MVP' if is_mvp else 'Standard'}",
+        LpMaximize
+    )
+
+    # Variables de décision
+    x = [LpVariable(f"x_{i}_iter{iteration}", cat=LpBinary) for i in range(n_available)]
+
+    # Variables MVP
+    if is_mvp:
+        max_forced_score = max((p.score for p in forced_team), default=0) if forced_team else 0
+        score_max = max(
+            max(p.score for p in available_players) if available_players else 0,
+            max_forced_score
+        )
+        y_available = [LpVariable(f"y_avail_{i}_iter{iteration}", cat=LpBinary) for i in range(n_available)]
+        y_forced = [LpVariable(f"y_forced_{i}_iter{iteration}", cat=LpBinary) for i in range(len(forced_team))]
+        s_gratuit = LpVariable(f"score_gratuit_iter{iteration}", lowBound=0, upBound=score_max)
+
+    # Fonction objectif
+    prob += lpSum([available_players[i].score * x[i] for i in range(n_available)]), "Total_Score"
+
+    # Contraintes de base
+    prob += lpSum([x[i] for i in range(n_available)]) == remaining_slots, "Remaining_Slots"
+
+    if is_mvp:
+        prob += (
+                lpSum([available_players[i].cost * x[i] for i in range(n_available)])
+                - lpSum([available_players[i].cost * y_available[i] for i in range(n_available)])
+                - lpSum([forced_team[i].cost * y_forced[i] for i in range(len(forced_team))])
+                <= remaining_budget
+        ), "Budget_Constraint"
+        prob += (
+                lpSum([y_available[i] for i in range(n_available)])
+                + lpSum([y_forced[i] for i in range(len(forced_team))])
+                == 1
+        ), "One_Free_Player"
+    else:
+        prob += (
+            lpSum([available_players[i].cost * x[i] for i in range(n_available)]) <= remaining_budget,
+            "Budget_Constraint"
+        )
+
+    prob += (
+        lpSum([int(available_players[i].is_star) * x[i] for i in range(n_available)]) >= remaining_stars_needed,
+        "Remaining_Stars"
+    )
+
+    # Contraintes MVP
+    if is_mvp:
+        for i in range(n_available):
+            prob += y_available[i] <= x[i], f"Free_Selected_Avail_{i}"
+            prob += s_gratuit >= available_players[i].score * y_available[i], f"Free_Score_Avail_{i}"
+            prob += (
+                available_players[i].score * x[i] <= s_gratuit + score_max * (1 - x[i]),
+                f"Max_Score_Avail_{i}"
+            )
+
+        for i in range(len(forced_team)):
+            prob += s_gratuit >= forced_team[i].score * y_forced[i], f"Free_Score_Forced_{i}"
+            prob += (
+                forced_team[i].score <= s_gratuit + score_max * (1 - y_forced[i]),
+                f"Max_Score_Forced_{i}"
+            )
+
+    # ============================================================================
+    # CONTRAINTES D'EXCLUSION : Empêcher les combinaisons déjà trouvées
+    # ============================================================================
+    for idx, excluded_combo in enumerate(excluded_combinations):
+        # Une combinaison est différente si au moins un joueur diffère
+        # On exclut les forcés de la comparaison (ils sont toujours présents)
+        excluded_available = [p for p in excluded_combo if p not in {fp.name for fp in forced_team}]
+
+        if not excluded_available:
+            continue
+
+        # Trouver les indices dans available_players
+        excluded_indices = [
+            i for i, p in enumerate(available_players)
+            if p.name in excluded_available
+        ]
+
+        # Cette combinaison ne doit pas être exactement reproduite
+        # Au moins un des joueurs précédemment sélectionnés ne doit PAS être sélectionné
+        prob += (
+            lpSum([x[i] for i in excluded_indices]) <= len(excluded_indices) - 1,
+            f"Exclude_Combination_{idx}"
+        )
+
+    # Résolution
+    prob.solve(PULP_CBC_CMD(msg=0, timeLimit=15))
+    status = LpStatus[prob.status]
+
+    if status != 'Optimal':
+        return None
+
+    # Construction du résultat
+    selected_available: List[Player] = []
+    free_player: Optional[Player] = None
+
+    for i in range(n_available):
+        if x[i].varValue == 1:
+            selected_available.append(available_players[i])
+            if is_mvp and y_available[i].varValue == 1:
+                free_player = available_players[i]
+
+    if is_mvp and free_player is None:
+        for i in range(len(forced_team)):
+            if y_forced[i].varValue == 1:
+                free_player = forced_team[i]
+                break
+
+    final_team = forced_team + selected_available
+
+    return _build_result(
+        selected_team=final_team,
+        free_player=free_player,
+        is_mvp=is_mvp,
+        status=status
+    )
+
+
 
 
 # ============================================================================
@@ -566,3 +669,4 @@ def _build_result(
             details=details,
             status=status
         )
+
