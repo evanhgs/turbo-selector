@@ -301,7 +301,7 @@ async def find_best_composition(
 @app.post("/best-comp/top-n", response_model=TopNResult)
 async def find_top_n_compositions(
         request: PlayersRequest,
-        n: int = 20
+        n: int = 8
 ) -> TopNResult:
     """
     Trouve les N meilleures compositions d'équipe NBA par ordre décroissant de score
