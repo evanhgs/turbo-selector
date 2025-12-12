@@ -31,14 +31,14 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 async def root():
     return {
         "message": "NBA Team Optimizer API",
-        "version": "1.0.0",
+        "version": "1.0.1",
         "endpoints": {
             "health check": "/health",
             "docs url": "/docs",
             "redoc url": "/redoc",
             "open api": "/openapi.json",
             "standard": "/best-comp",
-            "mvp": "/best-comp-mvp"
+            "retourne n possibilité": "/best-comp/top-n"
         }
     }
 
@@ -127,13 +127,11 @@ async def find_best_composition(
     remaining_stars_needed = max(0, minimum_stars - forced_stars)
     remaining_slots = team_size - len(forced_team)
 
-    # Validation de faisabilité
-    if remaining_budget < 0:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Les joueurs forcés dépassent le budget. "
-                   f"Coût forcé: {forced_cost}, Budget: {cost}"
-        )
+    # Meme soucis que dans le ticket de Julien quand le ticket est mvp alors le coup n'est pas anticipé avant donc ça déborde (logique) :)))
+    # cependant je ne peux pas résoudre le problème en faisant - max(player.cost) dans remaining_budget car peut le 5eme joueur sera le plus cher donc mvp
+    # mais je peux partir du principe qu'il y a sélectionné et ensuite on calcule et ça s'ajuste avec pulp (a verif)
+    # enfaite le programme pulp ajuste le calcule tout seul, donc la vérification est débile
+    # puis il y a le statut qui dit si c'est faisable ou non, avec des joueurs forcés trop fort en cout
 
     if remaining_stars_needed > remaining_slots:
         raise HTTPException(
@@ -449,10 +447,8 @@ def _preprocess_forced_players(
         return forced_team, available_players, \
             f"Trop de joueurs forcés ({len(forced_team)}) pour une équipe de {team_size}"
 
-    forced_cost = sum(p.cost for p in forced_team)
-    if forced_cost > cost:
-        return forced_team, available_players, \
-            f"Les joueurs forcés dépassent le budget. Coût: {forced_cost}, Budget: {cost}"
+    # Note sur le ticket de Julien, effectivement étant donné qu'on ne calcule pas encore le MVP le cout dépasse et ça nous retourne une err
+    # et comme on calcule le mvp après les couts enfaite c'est débile de mettre cette condition ici :P
 
     forced_stars = sum(1 for p in forced_team if p.is_star)
     remaining_slots = team_size - len(forced_team)
