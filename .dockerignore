@@ -35,7 +35,7 @@ wheels/
 .coverage
 htmlcov/
 *.http
-players.json
+data/players_0.json
 
 # Docker
 Dockerfile*

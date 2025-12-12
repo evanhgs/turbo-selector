@@ -14,12 +14,61 @@ POST http://127.0.0.1:8000/best-comp
 Content-Type: application/json
 Accept: application/json
 
-< players.json
+< data/players_0.json
 
 ###
 
-POST http://127.0.0.1:8000/best-comps-mvp
+POST http://127.0.0.1:8000/best-comp
 Content-Type: application/json
 Accept: application/json
 
-< players.json
+< data/players_1.json
+
+###
+
+POST http://127.0.0.1:8000/best-comp
+Content-Type: application/json
+Accept: application/json
+
+< data/players_2.json
+
+###
+
+POST http://127.0.0.1:8000/best-comp
+Content-Type: application/json
+Accept: application/json
+
+< data/players_3.json
+
+
+###
+
+POST http://127.0.0.1:8000/best-comp/top-n
+Content-Type: application/json
+Accept: application/json
+
+< data/players_0.json
+
+###
+
+POST http://127.0.0.1:8000/best-comp/top-n
+Content-Type: application/json
+Accept: application/json
+
+< data/players_1.json
+
+###
+
+POST http://127.0.0.1:8000/best-comp/top-n
+Content-Type: application/json
+Accept: application/json
+
+< data/players_2.json
+
+###
+
+POST http://127.0.0.1:8000/best-comp/top-n
+Content-Type: application/json
+Accept: application/json
+
+< data/players_3.json
